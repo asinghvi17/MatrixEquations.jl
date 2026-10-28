@@ -39,8 +39,7 @@ function opnorm1(op::LinearMaps.LinearMap{T}) where T
       catch err
          # if isnothing(findfirst("SingularException",string(err))) &&
          #    isnothing(findfirst("LAPACKException",string(err)))
-         findfirst("SingularException", string(err)) === nothing &&
-         findfirst("LAPACKException", string(err)) === nothing ? rethrow() : (return TR(Inf))
+         (err isa SingularException || err isa LAPACKException) ? (return TR(Inf)) : rethrow()
       end
       ej[j] = 0
    end

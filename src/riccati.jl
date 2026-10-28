@@ -1,7 +1,17 @@
+struct NativeRiccatiBackend end
+_ric_balret_s(::NativeRiccatiBackend,H,Sx,Sxi,n) = (H,Sx,Sxi)
+_ric_balret_g(::NativeRiccatiBackend,H,J,Sx,Sxi,n) = (H,J,Sx,Sxi)
+_ric_balret_e(::NativeRiccatiBackend,H,J,Sx,Sxi,Sr,n,m) = (H,J,Sx,Sxi,Sr)
+# Static backend choice; normal calls retain the stock LinearAlgebra path.
+_ric_schur!(::NativeRiccatiBackend, A...) = schur!(A...)
+_ric_schur(::NativeRiccatiBackend, A...) = schur(A...)
+_ric_ordschur!(::NativeRiccatiBackend, F, select) = ordschur!(F,select)
+_ric_lu_test(::NativeRiccatiBackend, A, tol) = _LUwithRicTest(A,tol)
+
 # Materialize uniform-scaling blocks before concatenation so block sizes are explicit.
-_dense_ric_block(A::AbstractMatrix, n, m) = A
-_dense_ric_block(A::UniformScaling, n, m) = Matrix(A, n, m)
-_dense_ric_block(A::Number, n, m) = Matrix(A*I, n, m)
+_dense_ric_block(A::AbstractMatrix, n, m, ::Type{T}) where T = Matrix{T}(A)
+_dense_ric_block(A::UniformScaling, n, m, ::Type{T}) where T = Matrix{T}(A,n,m)
+_dense_ric_block(A::Number, n, m, ::Type{T}) where T = Matrix{T}(A*I,n,m)
 
 """
     uqme(A, B, C; as = true, disc = true, scaling = 'B', pow2 = false,  
@@ -498,7 +508,7 @@ julia> eigvals(A-G*X)
   -4.337128244724374 + 0.0im
 ```
 """
-function arec(A::AbstractMatrix, G::Union{AbstractMatrix,UniformScaling,Real,Complex}, Q::Union{AbstractMatrix,UniformScaling,Real,Complex} = zero(eltype(A));
+function arec(A::AbstractMatrix, G::Union{AbstractMatrix,UniformScaling,Real,Complex}, Q::Union{AbstractMatrix,UniformScaling,Real,Complex} = zero(eltype(A)); backend = NativeRiccatiBackend(),
               scaling = 'B', pow2 = false, as = false, rtol::Real = size(A,1)*eps(real(float(one(eltype(A))))), nrm = 1)
     n = LinearAlgebra.checksquare(A)
     T = promote_type( eltype(A), eltype(G), eltype(Q) )
@@ -528,15 +538,16 @@ function arec(A::AbstractMatrix, G::Union{AbstractMatrix,UniformScaling,Real,Com
     
     # perform scaling if appropriate
     H, Sx, Sxi = balhamlike(A', A, G, Q; scaling, pow2, nrm)
-    S = schur!(H)
+    H, Sx, Sxi = _ric_balret_s(backend, H, Sx, Sxi, n)
+    S = _ric_schur!(backend, H)
 
     as ? select = real(S.values) .> 0 : select = real(S.values) .< 0
     n == count(select) || error("The Hamiltonian matrix is not dichotomic")
-    ordschur!(S, select)
+    _ric_ordschur!(backend, S, select)
 
     n2 = n+n
     ix = 1:n
-    F = _LUwithRicTest(S.Z[ix, ix],rtol)
+    F = _ric_lu_test(backend, S.Z[ix, ix],rtol)
     x = S.Z[n+1:n2, ix]/F
     lmul!(Sx,x); rmul!(x,Sxi)
     scalinfo = (Sx = Sx, Sxi = Sxi)
@@ -653,12 +664,12 @@ julia> eigvals(A-B*F)
 ```
 """
 function arec(A::AbstractMatrix, B::AbstractVecOrMat, R::Union{AbstractMatrix,UniformScaling,Real,Complex},
-   Q::Union{AbstractMatrix,UniformScaling,Real,Complex}, S::AbstractVecOrMat = zeros(eltype(B),size(B));
+   Q::Union{AbstractMatrix,UniformScaling,Real,Complex}, S::AbstractVecOrMat = zeros(eltype(B),size(B)); backend = NativeRiccatiBackend(),
    scaling = 'B', pow2 = false, as = false, rtol::Real = size(A,1)*eps(real(float(one(eltype(A))))), orth = false, nrm = 1)
    if orth
-      return garec(A, I, B, 0, R, Q, S; scaling, pow2, as, rtol, nrm)
+      return garec(A, I, B, 0, R, Q, S; backend, scaling, pow2, as, rtol, nrm)
    else
-      return arec(A, B, 0, R, Q, S; scaling, pow2, as, rtol, nrm)
+      return arec(A, B, 0, R, Q, S; backend, scaling, pow2, as, rtol, nrm)
    end
 end
 """
@@ -710,8 +721,8 @@ An orthogonal basis `Z` can be determined, with an increased computational cost,
 """
 function arec(A::AbstractMatrix, B::AbstractVecOrMat, G::Union{AbstractMatrix,UniformScaling,Real,Complex},
               R::Union{AbstractMatrix,UniformScaling,Real,Complex}, Q::Union{AbstractMatrix,UniformScaling,Real,Complex},
-              S::AbstractVecOrMat; scaling = 'B', pow2 = false, as = false, rtol::Real = size(A,1)*eps(real(float(one(eltype(A))))), orth = false, nrm = 1)
-   orth && (return garec(A, I, B, G, R, Q, S; scaling, pow2, as, rtol, nrm))
+              S::AbstractVecOrMat; backend = NativeRiccatiBackend(), scaling = 'B', pow2 = false, as = false, rtol::Real = size(A,1)*eps(real(float(one(eltype(A))))), orth = false, nrm = 1)
+   orth && (return garec(A, I, B, G, R, Q, S; backend, scaling, pow2, as, rtol, nrm))
 
    T = promote_type( eltype(A), eltype(B), eltype(G), eltype(Q), eltype(R), eltype(S) )
 
@@ -783,7 +794,7 @@ function arec(A::AbstractMatrix, B::AbstractVecOrMat, G::Union{AbstractMatrix,Un
    n == 0 && (return  zeros(T,0,0), zeros(T,0), zeros(T,m,0), zeros(T,m,0), (Sx = Diagonal(zeros(T,0)), Sxi = Diagonal(zeros(T,0)), Sr = Diagonal(zeros(T,m))) ) 
 
    S0flag = iszero(S)
-   SR = schur(R)
+   SR = _ric_schur(backend, R)
    D = real(diag(SR.T))
    Da = abs.(D)
    minDa, = findmin(Da)
@@ -798,7 +809,7 @@ function arec(A::AbstractMatrix, B::AbstractVecOrMat, G::Union{AbstractMatrix,Un
       #G = utqu(Dinv,Bu')
       G += utqu(Dinv,Bu')
       if S0flag
-         sol = arec(A, G, Q; scaling, nrm, pow2, as, rtol)
+         sol = arec(A, G, Q; backend, scaling, nrm, pow2, as, rtol)
          w2 = SR.Z*Dinv*Bu'
          f = w2*sol[1]
          z = [sol[3]; w2*(sol[3])[n+1:end,:]]
@@ -806,7 +817,7 @@ function arec(A::AbstractMatrix, B::AbstractVecOrMat, G::Union{AbstractMatrix,Un
          Su = S*SR.Z
          #Q -= Su*Dinv*Su'
          Q -= utqu(Dinv,Su')
-         sol = arec(A-Bu*Dinv*Su', G, Q; scaling, nrm, pow2, as, rtol)
+         sol = arec(A-Bu*Dinv*Su', G, Q; backend, scaling, nrm, pow2, as, rtol)
          w1 = SR.Z*Dinv*Su'
          w2 = SR.Z*Dinv*Bu'
          f = w1+w2*sol[1]
@@ -817,7 +828,7 @@ function arec(A::AbstractMatrix, B::AbstractVecOrMat, G::Union{AbstractMatrix,Un
    else
       # use implicit form
       @warn "R nearly singular: using the orthogonal reduction method"
-      return garec(A, I, B, G, R, Q, S; scaling, nrm, pow2, as, rtol)
+      return garec(A, I, B, G, R, Q, S; backend, scaling, nrm, pow2, as, rtol)
    end
 end
 """
@@ -1177,14 +1188,14 @@ This approach is not numerically suited when `R` is ill-conditioned and/or `B` h
     Proc. IEEE, 72:1746-1754, 1984.
 """
 function garec(A::AbstractMatrix, E::Union{AbstractMatrix,UniformScaling}, G::Union{AbstractMatrix,UniformScaling,Real,Complex},
-               Q::Union{AbstractMatrix,UniformScaling,Real,Complex} = zero(eltype(A));
+               Q::Union{AbstractMatrix,UniformScaling,Real,Complex} = zero(eltype(A)); backend = NativeRiccatiBackend(),
                scaling = 'B', pow2 = false, as = false, rtol::Real = size(A,1)*eps(real(float(one(eltype(A))))), nrm = 1)
     T = promote_type( eltype(A), eltype(G), eltype(Q) )
     T <: BlasFloat  || (T = promote_type(Float64,T))
 
     # use complex version because the generalized Schur form decomposition available only for complex data 
     if !(T <: BlasFloat || T <: Complex) 
-       sol = garec(tocomplex(A),tocomplex(E),tocomplex(G),tocomplex(Q); scaling, nrm, pow2, as, rtol)
+       sol = garec(tocomplex(A),tocomplex(E),tocomplex(G),tocomplex(Q); backend, scaling, nrm, pow2, as, rtol)
        return real(sol[1]), sol[2], Matrix(qr([real(sol[3]) imag(sol[3])]).Q)[:,1:size(A,1)], sol[4]
     end
 
@@ -1221,8 +1232,7 @@ function garec(A::AbstractMatrix, E::Union{AbstractMatrix,UniformScaling}, G::Un
 
     if !eident
       if T <: BlasFloat
-         Et = LinearAlgebra.LAPACK.getrf!(copy(E))
-         LinearAlgebra.LAPACK.gecon!('1',Et[1],opnorm(E,1))  < epsm && error("E must be non-singular")
+         _ric_check_E(backend,E,epsm)
       else
          cond(E)*epsm > 1 && error("E must be non-singular")
       end
@@ -1232,14 +1242,14 @@ function garec(A::AbstractMatrix, E::Union{AbstractMatrix,UniformScaling}, G::Un
     #                 [ -Q  -A']      [ 0  E' ]
     #  is determined and the solution X is computed as X = Z21*inv(E*Z11).
     # use block scaling if appropriate
-    L, P, Sx, Sxi = balham(A, E, G, Q; scaling, nrm)
-    LPS = schur(L,P)
+    L, P, Sx, Sxi = balham(A, E, G, Q; backend, scaling, nrm)
+    LPS = _ric_schur(backend, L,P)
     as ? select = real.(LPS.α ./ LPS.β) .> 0 : select = real.(LPS.α ./ LPS.β) .< 0
     n == count(select) || error("The Hamiltonian/skew-Hamiltonian pencil is not dichotomic")
-    ordschur!(LPS, select)
+    _ric_ordschur!(backend, LPS, select)
     i1 = 1:n
     i2 = n+1:2n
-    F = _LUwithRicTest(LPS.Z[i1, i1],rtol)
+    F = _ric_lu_test(backend, LPS.Z[i1, i1],rtol)
     x = LPS.Z[i2,i1]/F
     lmul!(Sx,x); rmul!(x,Sxi)
     eident || (x = x/E)
@@ -1345,9 +1355,9 @@ julia> eigvals(A-B*F,E)
 ```
 """
 function garec(A::AbstractMatrix, E::Union{AbstractMatrix,UniformScaling}, B::AbstractVecOrMat, R::Union{AbstractMatrix,UniformScaling,Real,Complex},
-   Q::Union{AbstractMatrix,UniformScaling,Real,Complex}, S::AbstractVecOrMat = zeros(eltype(B),size(B));
+   Q::Union{AbstractMatrix,UniformScaling,Real,Complex}, S::AbstractVecOrMat = zeros(eltype(B),size(B)); backend = NativeRiccatiBackend(),
    scaling = 'G', pow2 = false, as = false, rtol::Real = size(A,1)*eps(real(float(one(eltype(A))))), nrm = 1)
-   garec(A, E, B, 0, R, Q, S; scaling, pow2, as, rtol, nrm)
+   garec(A, E, B, 0, R, Q, S; backend, scaling, pow2, as, rtol, nrm)
 end
 """
     garec(A, E, B, G, R, Q, S; scaling = 'B', pw2 = false, as = false, rtol::Real = nϵ, nrm = 1) -> (X, EVALS, F, Z, scalinfo)
@@ -1393,14 +1403,14 @@ as `scalinfo.Sx`, `scalinfo.Sxi` and `scalinfo.Sr`, respectively.
 """
 function garec(A::AbstractMatrix, E::Union{AbstractMatrix,UniformScaling}, B::AbstractVecOrMat,
                G::Union{AbstractMatrix,UniformScaling,Real,Complex}, R::Union{AbstractMatrix,UniformScaling,Real,Complex},
-               Q::Union{AbstractMatrix,UniformScaling,Real,Complex}, S::AbstractVecOrMat;
+               Q::Union{AbstractMatrix,UniformScaling,Real,Complex}, S::AbstractVecOrMat; backend = NativeRiccatiBackend(),
                scaling = 'B', pow2 = false, as = false, rtol::Real = size(A,1)*eps(real(float(one(eltype(A))))), nrm = 1)
     T = promote_type( eltype(A), eltype(B), eltype(G), eltype(Q), eltype(R), eltype(S) )
     T <: BlasFloat  || (T = promote_type(Float64,T))
    
     # use complex version because the generalized Schur form decomposition available only for complex data 
     if !(T <: BlasFloat || T <: Complex) 
-       sol = garec(tocomplex(A),tocomplex(E),tocomplex(B),tocomplex(G),tocomplex(R),tocomplex(Q),tocomplex(S); scaling, pow2, as, rtol, nrm)
+       sol = garec(tocomplex(A),tocomplex(E),tocomplex(B),tocomplex(G),tocomplex(R),tocomplex(Q),tocomplex(S); backend, scaling, pow2, as, rtol, nrm)
        return real(sol[1]), isreal(sol[2]) ? real(sol[2]) : sol[2], real(sol[3]), Matrix(qr([real(sol[4]) imag(sol[4])]).Q)[:,1:size(A,1)], sol[5]
     end
 
@@ -1451,8 +1461,7 @@ function garec(A::AbstractMatrix, E::Union{AbstractMatrix,UniformScaling}, B::Ab
 
     if !eident
       if T <: BlasFloat
-         Et = LinearAlgebra.LAPACK.getrf!(copy(E))
-         LinearAlgebra.LAPACK.gecon!('1',Et[1],opnorm(E,1))  < epsm && error("E must be non-singular")
+         _ric_check_E(backend,E,epsm)
       else
          cond(E)*epsm < 1 || error("E must be non-singular")
       end
@@ -1465,7 +1474,7 @@ function garec(A::AbstractMatrix, E::Union{AbstractMatrix,UniformScaling}, B::Ab
     #               [  S'  B'   R ]      [ 0  0  0 ]
     # is determined and the solution X and feedback F are computed as
     #          X = Z21*inv(E*Z11),   F = -Z31*inv(Z11).
-    H, J, Sx, Sxi, Sr = balham(A, E, B, G, R, Q, S; scaling, pow2, nrm)
+    H, J, Sx, Sxi, Sr = balham(A, E, B, G, R, Q, S; backend, scaling, pow2, nrm)
     # deflate m simple infinite eigenvalues
     n2 = n+n;
     iric = 1:n2
@@ -1483,15 +1492,15 @@ function garec(A::AbstractMatrix, E::Union{AbstractMatrix,UniformScaling}, B::Ab
     L11 = H[iric,:]*z
     #P11 = [ E*z[i1,:]; E'*z[i2,:] ]
     P11 = J[iric,:]*z
-    LPS = schur(L11,P11)
+    LPS = _ric_schur(backend, L11,P11)
     as ? select = real.(LPS.α ./ LPS.β) .> 0 : select = real.(LPS.α ./ LPS.β) .< 0
     n == count(select) ||
          error("The extended Hamiltonian/skew-Hamiltonian pencil is not dichotomic")
-    ordschur!(LPS, select)
+    _ric_ordschur!(backend, LPS, select)
 
     z[:,i1] = z[:,iric]*LPS.Z[:,i1];
 
-    F = _LUwithRicTest(z[i1,i1],rtol)
+    F = _ric_lu_test(backend, z[i1,i1],rtol)
     if eident
        x = z[n+1:end,i1]/F
        f = -x[n+1:end,:]; lmul!(Sr,f); rmul!(f,Sxi)
@@ -2022,12 +2031,12 @@ function baluqme(A, B, C; scaling = 'B', pow2 = false, nrm = 1)
    end
 end
 
-function balham(A, E, G, Q; scaling = 'B', pow2 = false, nrm = 1) 
+function balham(A, E, G, Q; backend = NativeRiccatiBackend(), scaling = 'B', pow2 = false, nrm = 1)
    # Scaling function to be used in conjunction with garec(A,E,G,Q)
    n = size(A,1); 
    T = eltype(A)
-   H = [A -G; -Q -A']; J = [E zeros(T,n,n); zeros(T,n,n) E']
-   scaling == 'N' && (return H, J, I, I)
+   H = [A -G; -Q copy(-A')]; J = [E zeros(T,n,n); zeros(T,n,n) copy(E')]
+   scaling == 'N' && (return _ric_balret_g(backend, H,J,I,I,size(A,1)))
    n2 = 2n; i1 = 1:n; i2 = n+1:n2
    Gt = view(H,i1,i2)
    Qt = view(H,i2,i1)
@@ -2041,9 +2050,9 @@ function balham(A, E, G, Q; scaling = 'B', pow2 = false, nrm = 1)
          scalsr = sqrt(scal) 
          pow2 && (scalsr = radix^(round(Int,log2(scalsr))); scal = scalsr^2) 
          ldiv!(scal,Qt); lmul!(scal,Gt)  # Q -> Q/scal; G -> G * scal 
-         return H, J, scalsr*I, scalsr*I
+         return _ric_balret_g(backend, H,J,scalsr*I,scalsr*I,size(A,1))
       else    
-         return H, J, I, I
+         return _ric_balret_g(backend, H,J,I,I,size(A,1))
       end
    elseif scaling == 'S'
       # structure preserving scaling enhanced, if appropriate, with block scaling
@@ -2073,7 +2082,7 @@ function balham(A, E, G, Q; scaling = 'B', pow2 = false, nrm = 1)
          lmul!(scalsr,Sx) 
          lmul!(scal,Gt); ldiv!(scal,Qt)
       end         
-      return H, J, Sx, Sx
+      return _ric_balret_g(backend, H,J,Sx,Sx,size(A,1))
    elseif scaling == 'K'
       # structure preserving scaling enhanced, if appropriate, with block scaling
       # nh = norm(view(H,i1,i1)-Diagonal(view(H,i1,i1)),1) + norm(view(H,i2,i2)-Diagonal(view(H,i2,i2)),1) 
@@ -2101,7 +2110,7 @@ function balham(A, E, G, Q; scaling = 'B', pow2 = false, nrm = 1)
          lmul!(scalsr,view(Dr.diag,i2)); ldiv!(scalsr,view(Dr.diag,i1))
       end
 
-      return H, J, Diagonal(Dr.diag[i2]), inv(Diagonal(Dr.diag[i1])) 
+      return _ric_balret_g(backend, H,J,Diagonal(Dr.diag[i2]),inv(Diagonal(Dr.diag[i1])),size(A,1))
    elseif scaling == 'G'
       # general scaling enhanced, if appropriate, with a block scaling
       _, D2 = regbalance!(H, J; tol = 0.1)
@@ -2114,13 +2123,13 @@ function balham(A, E, G, Q; scaling = 'B', pow2 = false, nrm = 1)
          ldiv!(scal,Qt); lmul!(scal,Gt)  # Q -> Q/scal; G -> G * scal
          lmul!(scalsr,view(D2.diag,i2)); ldiv!(scalsr,view(D2.diag,i1))
       end
-      return H, J, Diagonal(D2.diag[i2]), inv(Diagonal(D2.diag[i1])) 
+      return _ric_balret_g(backend, H,J,Diagonal(D2.diag[i2]),inv(Diagonal(D2.diag[i1])),size(A,1))
    else
       @warn "No such scaling option: no scaling is performed"
-      return H, J, I, I
+      return _ric_balret_g(backend, H,J,I,I,size(A,1))
    end
 end
-function balham(A, E, B, G, R, Q, S; scaling = 'B', pow2 = false, nrm = 1) 
+function balham(A, E, B, G, R, Q, S; backend = NativeRiccatiBackend(), scaling = 'B', pow2 = false, nrm = 1)
    # Scaling function to be used in conjunction with garec(A, E, B, G, R, Q, S)
    #                   [  A   -G    B ]      [ E  0  0 ]
    #          H -z J = [ -Q   -A'  -S ]  - z [ 0  E' 0 ]
@@ -2128,10 +2137,10 @@ function balham(A, E, B, G, R, Q, S; scaling = 'B', pow2 = false, nrm = 1)
    
    n, m = size(B,1), size(B,2); n2 = 2n
    T = eltype(A)
-   G, Q, R, E = _dense_ric_block(G,n,n), _dense_ric_block(Q,n,n), _dense_ric_block(R,m,m), _dense_ric_block(E,n,n)
-   H = [A -G B; -Q -A' -S; S' B' R] 
-   J = [E zeros(T,n,n+m); zeros(T,n,n) E' zeros(T,n,m); zeros(T,m,n2+m)]
-   scaling == 'N' && (return H, J, I, I, I)
+   G, Q, R, E = _dense_ric_block(G,n,n,T), _dense_ric_block(Q,n,n,T), _dense_ric_block(R,m,m,T), _dense_ric_block(E,n,n,T)
+   H = [A -G B; -Q copy(-A') -S; copy(S') copy(B') R]
+   J = [E zeros(T,n,n+m); zeros(T,n,n) copy(E') zeros(T,n,m); zeros(T,m,n2+m)]
+   scaling == 'N' && (return _ric_balret_e(backend, H,J,I,I,I,size(A,1),size(B,2)))
    i1 = 1:n; i2 = n+1:n2; i3 = n2+1:n2+m; j2 = 1:n2
    At = view(H,i1,i1)
    Bt = view(H,i1,i3)
@@ -2155,9 +2164,9 @@ function balham(A, E, B, G, R, Q, S; scaling = 'B', pow2 = false, nrm = 1)
          ldiv!(scal,Qt); lmul!(scal,Gt)  # Q -> Q/scal; G -> G * scal
          ldiv!(scal,St); ldiv!(scal,St2) # S -> S/scal 
          ldiv!(scal,Rt)                  # R -> R/scal
-         return H, J, scalsr*I, scalsr*I, (1/scalsr)*I
+         return _ric_balret_e(backend, H,J,scalsr*I,scalsr*I,(1/scalsr)*I,size(A,1),size(B,2))
       else    
-         return H, J, I, I, I
+         return _ric_balret_e(backend, H,J,I,I,I,size(A,1),size(B,2))
       end
    elseif scaling == 'S'
       # structure preserving scaling enhanced, if appropriate, with block scaling
@@ -2198,7 +2207,7 @@ function balham(A, E, B, G, R, Q, S; scaling = 'B', pow2 = false, nrm = 1)
          pow2 && (rs = radix^(round(Int,log2(rs)))) 
          lmul!(rs,view(H,i3,:)); rmul!(view(H,:,i3),rs); lmul!(rs,Sr)
       end
-      return H, J, Sx, Sx, Sr
+      return _ric_balret_e(backend, H,J,Sx,Sx,Sr,size(A,1),size(B,2))
    elseif scaling == 'D'
       # descriptor system oriented general scaling enhanced, if appropriate, with block scaling
       sr = ones(T,m)
@@ -2223,7 +2232,7 @@ function balham(A, E, B, G, R, Q, S; scaling = 'B', pow2 = false, nrm = 1)
          lmul!(rs,view(H,i3,:)); rmul!(view(H,:,i3),rs); lmul!(rs,sr)
       end
 
-      return H, J, Diagonal(D2.diag[i2]), inv(Diagonal(D2.diag[i1])), Diagonal(sr) 
+      return _ric_balret_e(backend, H,J,Diagonal(D2.diag[i2]),inv(Diagonal(D2.diag[i1])),Diagonal(sr),size(A,1),size(B,2))
    elseif scaling == 'T'
       # standard system oriented structure preserving scaling enhanced, if appropriate, with block scaling
       nh = norm(At-Diagonal(At),1) 
@@ -2261,7 +2270,7 @@ function balham(A, E, B, G, R, Q, S; scaling = 'B', pow2 = false, nrm = 1)
          lmul!(rs,view(H,i3,:)); rmul!(view(H,:,i3),rs); lmul!(rs,sr)
       end
       Sr = Diagonal(sr)
-      return H, J, Sx, Sx, Sr
+      return _ric_balret_e(backend, H,J,Sx,Sx,Sr,size(A,1),size(B,2))
    elseif scaling == 'K'
       # symmetric scaling enhanced, if appropriate, with a block scaling
       nh = norm(At-Diagonal(At),1) 
@@ -2291,7 +2300,7 @@ function balham(A, E, B, G, R, Q, S; scaling = 'B', pow2 = false, nrm = 1)
          lmul!(scalsr,view(Dr.diag,i2)); ldiv!(scalsr,view(Dr.diag,i1))
          ldiv!(scalsr,view(Dr.diag,i3))
       end
-      return H, J, Diagonal(Dr.diag[i2]), inv(Diagonal(Dr.diag[i1])), Diagonal(Dr.diag[i3])   
+      return _ric_balret_e(backend, H,J,Diagonal(Dr.diag[i2]),inv(Diagonal(Dr.diag[i1])),Diagonal(Dr.diag[i3]),size(A,1),size(B,2))
    elseif scaling == 'G'
       # general scaling enhanced, if appropriate, with a block scaling
       _, D2 = regbalance!(H, J; tol = 0.001, maxiter = 1000, pow2)
@@ -2307,10 +2316,10 @@ function balham(A, E, B, G, R, Q, S; scaling = 'B', pow2 = false, nrm = 1)
          lmul!(scalsr,view(D2.diag,i2)); ldiv!(scalsr,view(D2.diag,i1)); 
          ldiv!(scalsr,view(D2.diag,i3))
       end
-      return H, J, Diagonal(D2.diag[i2]), inv(Diagonal(D2.diag[i1])), Diagonal(D2.diag[i3]) 
+      return _ric_balret_e(backend, H,J,Diagonal(D2.diag[i2]),inv(Diagonal(D2.diag[i1])),Diagonal(D2.diag[i3]),size(A,1),size(B,2))
    else
       @warn "No such scaling option: no scaling is performed"
-      return H, J, I, I, I
+      return _ric_balret_e(backend, H,J,I,I,I,size(A,1),size(B,2))
    end
 end
 function balhamlike(A1, A2, B1, B2, R, Q, S1, S2; scaling = 'B', pow2 = false, nrm = 1) 
@@ -3099,3 +3108,9 @@ end
 
 
 
+
+function _ric_check_E(::NativeRiccatiBackend,E,epsm)
+    Et=LinearAlgebra.LAPACK.getrf!(copy(E))
+    LinearAlgebra.LAPACK.gecon!('1',Et[1],opnorm(E,1)) < epsm && error("E must be non-singular")
+    nothing
+end

@@ -50,7 +50,7 @@ julia> A*X + X*A' + C
   2.22045e-16  -4.44089e-16
 ```
 """
-function lyapc(A::AbstractMatrix, C::AbstractMatrix; blocksize::Int = 64, generic::Val{G} = Val(false)) where {G}
+function lyapc(A::AbstractMatrix, C::AbstractMatrix; blocksize::Int = 64, generic::Val{G} = Val(false), backend = NativeRiccatiBackend()) where {G}
    """
    The Bartels-Steward Schur form based method in [1] is employed for matrix dimensions not exceeding
    the specified blocksize. For large dimensions, the recursive blocked algorithm in [2] is used.
@@ -91,13 +91,13 @@ function lyapc(A::AbstractMatrix, C::AbstractMatrix; blocksize::Int = 64, generi
 
    if ishermitian(A)
       # Reduce A to diagonal form and transform C
-      AS, Q = schur(Hermitian(A))
+      AS, Q = _ric_schur(backend, Hermitian(A))
    else
       # Reduce A to Schur form and transform C
       if adj
-         AS, Q = schur(A.parent)
+         AS, Q = _ric_schur(backend, A.parent)
       else
-         AS, Q = schur(A)
+         AS, Q = _ric_schur(backend, A)
       end
    end
    #X = Q'*C*Q
