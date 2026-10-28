@@ -1,3 +1,8 @@
+# Materialize uniform-scaling blocks before concatenation so block sizes are explicit.
+_dense_ric_block(A::AbstractMatrix, n, m) = A
+_dense_ric_block(A::UniformScaling, n, m) = Matrix(A, n, m)
+_dense_ric_block(A::Number, n, m) = Matrix(A*I, n, m)
+
 """
     uqme(A, B, C; as = true, disc = true, scaling = 'B', pow2 = false,  
          rtol::Real = nϵ, nrm = 1, indeig) -> (X, EVALS, Z, scalinfo, ind, HEVALS)
@@ -518,7 +523,8 @@ function arec(A::AbstractMatrix, G::Union{AbstractMatrix,UniformScaling,Real,Com
     eltype(G) == T || (typeof(G) <: AbstractMatrix ? G = convert(Matrix{T},G) : G = convert(T,G.λ)*I)
     eltype(Q) == T || (typeof(Q) <: AbstractMatrix ? Q = convert(Matrix{T},Q) : Q = convert(T,Q.λ)*I)
 
-    n == 0 && (return  zeros(T,0,0), zeros(T,0), zeros(T,m,0) )
+    n == 0 && return (zeros(T,0,0), zeros(T,0), zeros(T,0,0),
+        (Sx = Diagonal(zeros(T,0)), Sxi = Diagonal(zeros(T,0))))
     
     # perform scaling if appropriate
     H, Sx, Sxi = balhamlike(A', A, G, Q; scaling, pow2, nrm)
@@ -1471,7 +1477,7 @@ function garec(A::AbstractMatrix, E::Union{AbstractMatrix,UniformScaling}, B::Ab
     cond(W.R) * epsm  < 1 || error("The extended Hamiltonian/skew-Hamiltonian pencil is not regular")
 
     #z = W.Q[:,m+1:m+n2]
-    z = W.Q*[fill(false,m,n2); I ]
+    z = W.Q*[fill(false,m,n2); Matrix{eltype(W.R)}(I,n2,n2)]
 
     #L11 = [ A -G B; -Q -A' -S]*z
     L11 = H[iric,:]*z
@@ -2122,6 +2128,7 @@ function balham(A, E, B, G, R, Q, S; scaling = 'B', pow2 = false, nrm = 1)
    
    n, m = size(B,1), size(B,2); n2 = 2n
    T = eltype(A)
+   G, Q, R, E = _dense_ric_block(G,n,n), _dense_ric_block(Q,n,n), _dense_ric_block(R,m,m), _dense_ric_block(E,n,n)
    H = [A -G B; -Q -A' -S; S' B' R] 
    J = [E zeros(T,n,n+m); zeros(T,n,n) E' zeros(T,n,m); zeros(T,m,n2+m)]
    scaling == 'N' && (return H, J, I, I, I)

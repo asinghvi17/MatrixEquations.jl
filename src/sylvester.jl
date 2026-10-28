@@ -1005,7 +1005,9 @@ function _sylvcs_blocked!(A, B, C, isgn::Int, adjA::Bool, adjB, blocksize::Integ
    end   
 end
 
-function sylvcs!(A::AbstractMatrix{T1}, B::AbstractMatrix{T1}, C::AbstractMatrix{T1}; isgn::Int = 1,
+sylvcs!(A::AbstractMatrix{T1}, B::AbstractMatrix{T1}, C::AbstractMatrix{T1}; kwargs...) where T1<:Real =
+    _sylvcs_generic!(A,B,C;kwargs...)
+function _sylvcs_generic!(A::AbstractMatrix{T1}, B::AbstractMatrix{T1}, C::AbstractMatrix{T1}; isgn::Int = 1,
                  adjA::Bool = false, adjB::Bool = false) where T1<:Real
    """
    The Bartels-Stewart Schur form based approach [1] is employed.
